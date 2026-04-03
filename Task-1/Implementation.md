@@ -1,38 +1,4 @@
-# Job API Implementation Plan
-
-## 1. Job Enhancements — Karma Rewards & Gig Support
-### Description
-Enable companies to incentivize applications by adding karma rewards for successful placements and specifically tagging roles as Gigs or Internships for targeted talent discovery.
-
-### Requirements:
-- **Model Updates**: Add `karma_reward` (Integer) to `CompanyJob` to allow companies to offer karma upon successful hiring/milestones.
-```sql
-ALTER TABLE company_jobs
-    ADD COLUMN karma_reward INTEGER DEFAULT NULL;
-
-COMMENT ON COLUMN company_jobs.karma_reward IS 'Optional karma points awarded to the learner upon successful hiring or milestone completion. NULL means no karma reward for this job.';
-```
-```py
-karma_reward = models.IntegerField(blank=True, null=True)
-```
-- **Job Types**: Support diverse employment models including `Gig`, `Internship`, `Full-Time`, `Part-Time`, `Remote`, and `Hybrid`.
-- **API: Job Creation/Update**: Update job posting APIs to accept these new fields, ensuring they are reflected in the Discovery API.
-
-## 2. Job Application Tracking — Lifecycle Management
-### Description
-Track the end-to-end recruitment lifecycle within the platform, from the initial learner application to final status updates (Shortlisting, Interviewing, and Accept/Reject).
-
-### Context & Implementation Strategy
-The initial investigation revealed that tracking job applications required a more robust mechanism than simple flags on existing models. To support production-grade requirements, we are introducing a **Dynamic Form-Based Application System** that enables companies to define custom application requirements and track candidates through multiple hiring stages.
-
-### API Overview
-- **POST /api/v1/company/job/apply/**: Allows a learner to **Apply** for a specific job. Validates input against the active form's JSON schema (as seen in `form.json`).
-- **GET /api/v1/company/job/applications/{job_id}/**: For companies to view and filter candidates. Supports pagination and status-based filtering.
-- **PATCH /api/v1/company/job/applications/{application_id}/status/**: Allows companies to **Shortlist**, **Interview**, **Accept**, or **Reject** candidates. This update records the lifecycle transition and triggers stage-specific timestamps.
-
----
-
-## 3. Learner Discovery API — Filter & View Learners
+## 1. Learner Discovery API — Filter & View Learners
 
 ### GET company/learners/
 ### Description
@@ -108,6 +74,91 @@ Response
 * **Pagination**: custom `pageIndex` and `perPage` handling.
 
 ---
+
+# Job API Implementation Plan
+
+## 2. Job Enhancements — Karma Rewards & Gig Support
+### Description
+Enable companies to incentivize applications by adding karma rewards for successful placements and specifically tagging roles as Gigs or Internships for targeted talent discovery.
+
+### Requirements:
+- **Model Updates**: Add `karma_reward` (Integer) to `CompanyJob` to allow companies to offer karma upon successful hiring/milestones.
+```sql
+ALTER TABLE company_jobs
+    ADD COLUMN karma_reward INTEGER DEFAULT NULL;
+
+COMMENT ON COLUMN company_jobs.karma_reward IS 'Optional karma points awarded to the learner upon successful hiring or milestone completion. NULL means no karma reward for this job.';
+```
+```py
+karma_reward = models.IntegerField(blank=True, null=True)
+```
+- **Job Types**: Support diverse employment models including `Gig`, `Internship`, `Full-Time`, `Part-Time`, `Remote`, and `Hybrid`.
+- **API: Job Creation/Update**: Update job posting APIs to accept these new fields, ensuring they are reflected in the Discovery API.
+
+## 3. Job Application Tracking — Lifecycle Management
+### Description
+Track the end-to-end recruitment lifecycle within the platform, from the initial learner application to final status updates (Shortlisting, Interviewing, and Accept/Reject).
+
+### Context & Implementation Strategy
+The initial investigation revealed that tracking job applications required a more robust mechanism than simple flags on existing models. To support production-grade requirements, we are introducing a **Dynamic Form-Based Application System** that enables companies to define custom application requirements and track candidates through multiple hiring stages.
+
+### API Architecture & Details
+
+#### 1. Learner Job Application
+- **Path**: `POST /api/v1/company/job/apply/`
+- **Description**: Allows a learner to submit their application for a specific job by answering company-defined dynamic questions.
+- **Payload**:
+  ```json
+  {
+    "job_id": "uuid",
+    "form_id": "uuid",
+    "form_data": {
+      "full_name": "Adarsh S",
+      "graduation_year": "3",
+      "github_portfolio": "https://github.com/adarsh-s"
+    },
+    "resume_url": "https://s3.link/resume.pdf"
+  }
+  ```
+- **Status Codes**: `201 Created`, `400 Bad Request` (Validation errors).
+- **Implementation Logic**:
+    - **Validation**: Ensures the `form_id` belongs to the `job_id` and is marked `is_active`.
+    - **Prerequisites**: Checks if the learner meets the `min_karma`, `min_level`, and any specific `CompanyJobRule` requirements.
+    - **Constraint**: Enforces the `uq_cja_user_job` unique constraint (one application per user-job).
+    - **Persistence**: Maps the learner responses into the `form_data` JSONB column.
+
+#### 2. Company Applicant Pool View
+- **Path**: `GET /api/v1/company/job/applications/{job_id}/`
+- **Description**: Enables companies to view and filter candidates who have applied for their job postings.
+- **Path Parameters**: `job_id` (String: UUID).
+- **Query Parameters**:
+    - `status`: Filter by application stage (`Applied`, `Shortlisted`, `Interview`, `Rejected`, etc.).
+    - `pageIndex`: Pagination support (default: 1).
+    - `perPage`: Items per page (default: 25).
+- **Result**: A paginated list of `CompanyJobApplication` records, including nested learner profile details (muid, name, karma).
+- **Implementation Logic**:
+    - **Access Control**: Validates that the requester belongs to the company owning the `job_id`.
+    - **Data Joining**: Efficiently fetches application data and user metadata in a single response for company dashboards.
+
+#### 3. Shortlisting & Stage Progression
+- **Path**: `PATCH /api/v1/company/job/applications/{application_id}/status/`
+- **Description**: Allows recruiters to move candidates through the hiring pipeline (e.g., Shortlisting, Interviewing, and final Hired/Rejected status).
+- **Path Parameters**: `application_id` (String: UUID).
+- **Payload**:
+  ```json
+  {
+    "status": "Shortlisted",
+    "rejection_reason": "Optional feedback"
+  }
+  ```
+- **Status Codes**: `200 OK`, `403 Forbidden` (Unauthorized recruiter).
+- **Implementation Logic**:
+    - **Lifecycle Update**: Updates the `status` Enum and the `updated_by` field.
+    - **Audit Log**: Automatically populates the relevant timestamp (e.g., `shortlisted_at`, `interviewed_at`, `hired_at`) based on the new status.
+    - **Feedback**: Records `rejection_reason` if the status is transitioned to `Rejected`.
+
+---
+
 
 ## Technical Infrastructure & Specifications
 
@@ -230,7 +281,9 @@ This shows how a learner's response is captured in the `form_data` (JSONB) colum
 
 ---
 
-<!-- **Feature Set: Advanced Recruitment Tracking & Lifecycle Management**
+<!-- ### Google Docs: API Requirements Summary (Submission Ready) -->
+
+<!-- **Feature Set: Advanced Recruitment Tracking & Lifecycle Management** -->
 
 <!-- **1. Job Enhancements**: -->
 <!-- - **Karma Rewards**: Option to attach `karma_reward` points to job postings. -->
